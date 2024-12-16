@@ -7,7 +7,8 @@
 #   "seaborn",
 #   "matplotlib",
 #   "openai",
-#   "tenacity"
+#   "tenacity",
+#   "chardet"
 # ]
 # ///
 
@@ -17,12 +18,25 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from tenacity import retry, stop_after_attempt, wait_fixed
 from openai import OpenAI
+import chardet  # Import chardet for automatic encoding detection
 
 class DataAnalysisAssistant:
     def __init__(self, dataset_path):
         self.dataset_path = dataset_path
-        self.df = pd.read_csv(dataset_path)
-        self.client = OpenAI(api_key=os.environ.get("AIPROXY_TOKEN"))
+
+        # Detect encoding using chardet
+        with open(dataset_path, 'rb') as f:
+            result = chardet.detect(f.read())
+        encoding = result['encoding']
+        print(f"Detected encoding: {encoding}")
+
+        # Read CSV with the detected encoding
+        self.df = pd.read_csv(dataset_path, encoding=encoding)
+
+        self.client = OpenAI(
+            api_key=os.environ.get("AIPROXY_TOKEN"),
+            base_url="https://aiproxy.sanand.workers.dev/openai/v1"
+        )
 
     def basic_analysis(self):
         """Perform basic statistical analysis."""
@@ -31,7 +45,7 @@ class DataAnalysisAssistant:
             'total_columns': len(self.df.columns),
             'column_types': dict(self.df.dtypes),
             'missing_values': self.df.isnull().sum().to_dict(),
-            'summary_statistics': self.df.describe(include='all', datetime_is_numeric=True).to_dict()
+            'summary_statistics': self.df.describe(include='all').to_dict()
         }
         return analysis
 
@@ -59,14 +73,15 @@ class DataAnalysisAssistant:
 
     @retry(stop=stop_after_attempt(2), wait=wait_fixed(2))
     def get_llm_insights(self, analysis_context):
-        """Get concise insights from the LLM."""
+        """Get concise insights from the LLM with token efficiency in mind."""
         response = self.client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a data science expert analyzing a dataset."},
-                {"role": "user", "content": f"Here is the summary of my dataset analysis: {analysis_context}.\n"
-                                              "Please provide insights, potential patterns, and recommendations."}
-            ]
+                {"role": "system", "content": "You are a data science expert helping analyze datasets."},
+                {"role": "user", "content": f"Here is a high-level summary of my dataset: {analysis_context}.\n"
+                                           "Please provide a concise story about trends, patterns, and potential recommendations."}
+            ],
+            max_tokens=500  # Restrict response length to save tokens
         )
         return response.choices[0].message.content
 
@@ -86,7 +101,7 @@ class DataAnalysisAssistant:
             f.write("![Data Analysis Visualization](data_analysis.png)\n")
 
     def run_analysis(self):
-        """Main analysis workflow."""
+        """Main analysis workflow with token optimization."""
         print("Performing basic analysis...")
         basic_analysis = self.basic_analysis()
         summarized_analysis = {
@@ -97,7 +112,11 @@ class DataAnalysisAssistant:
         }
 
         print("Requesting insights from the LLM...")
-        llm_insights = self.get_llm_insights(str(summarized_analysis))
+        try:
+            llm_insights = self.get_llm_insights(str(summarized_analysis))
+        except Exception as e:
+            print(f"Error fetching LLM insights: {e}")
+            llm_insights = "Insights could not be fetched due to token or API limitations."
 
         print("Generating visualizations...")
         self.generate_visualizations()
